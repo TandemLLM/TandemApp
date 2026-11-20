@@ -138,11 +138,45 @@ def version() -> str:
 
 def _live_engine() -> dict:
     """The live stream's engine block for a server with no engine: the proxy's in-flight
-    count."""
+    count, plus the engine block of the TandemLLM backend behind it (proxy/liverelay.py)
+    when one is fresh: the model, its KV window, its memory — what only the engine knows."""
     svc: Service = STATE["svc"]
-    return {"model": None, "version": STATE.get("version", ""),
-            "draining": bool(STATE.get("draining")), "kv": {"length": 0, "max_len": 0},
-            "memory": {"mem_available_gib": None, "rss_gib": None}, "store": None}
+    out = {"model": None, "version": STATE.get("version", ""),
+           "draining": bool(STATE.get("draining")), "kv": {"length": 0, "max_len": 0},
+           "memory": {"mem_available_gib": None, "rss_gib": None}, "store": None}
+    relay = STATE.get("liverelay")
+    eng = relay.engine_block() if relay is not None else None
+    if eng:
+        out.update(eng)
+    return out
+
+
+def _live_enrich(rec) -> dict | None:
+    """An in-flight row's engine-side figures (proxy/liverelay.py): the live rates of a
+    relayed request, joined by its answer's id — the `X-Tandem-Request-Id` header of a new
+    engine names it at stream open (proxy/relay.py), the first frame of an old one carries
+    it. While an old engine's request is still prefilling it has no id to join with: if the
+    backend has exactly one prefill row open it can only be this request's, and its prefill
+    figures join the row (`sole_prefill`); two is ambiguous and the row stays exactly what
+    the controller measured. None without a relay or a fresh engine figure."""
+    relay = STATE.get("liverelay")
+    if relay is None:
+        return None
+    fields = relay.row_fields(rec)
+    if fields:
+        return fields
+    if (getattr(rec, "upstream_request", None) is None and rec.t_first is None
+            and getattr(rec, "backend_kind", None) == "tandemllm"
+            and getattr(rec, "backend", None)):
+        return relay.sole_prefill(rec.backend)
+    return None
+
+
+def _live_rates() -> dict | None:
+    """The rates the controller cannot measure, from the TandemLLM backend behind it
+    (proxy/liverelay.py); None when none is fresh."""
+    relay = STATE.get("liverelay")
+    return relay.rates() if relay is not None else None
 
 
 def _live_status() -> dict:
@@ -1239,7 +1273,8 @@ def build(args, env=None) -> Service:
     registry = metrics_mod.Registry()
     live = live_mod.LiveRegistry(blocks=lambda: None, last_prefill=lambda: None,
                                  engine=_live_engine, hz=live_mod.DEFAULT_HZ, activity=False,
-                                 queue_timeout=lambda: 0.0)
+                                 queue_timeout=lambda: 0.0,
+                                 enrich=_live_enrich, live_rates=_live_rates)
     STATE.update(version=version(), ledger=led, auth=a, accounts=accounts, registry=registry,
                  live=live, dashboard_dir=args.dashboard_dir, verbose=args.verbose,
                  args={k: v for k, v in vars(args).items()})
@@ -1287,6 +1322,14 @@ def build(args, env=None) -> Service:
     # the sampler: it sleeps while nothing is in flight (the live stream and the parallel view's
     # once-a-second sample; before 0.3.32 the standalone proxy never started it)
     live.start()
+    # the engines' live figures for the Performance page (proxy/liverelay.py): the
+    # controller has no decode loop of its own, so its live view carries its TandemLLM
+    # backends' rates; TANDEM_LIVE_RELAY=off leaves the live view exactly as it was
+    if env.get("TANDEM_LIVE_RELAY", "on") != "off":
+        from proxy import liverelay
+        STATE["liverelay"] = svc.liverelay = liverelay.LiveRelay(
+            svc, log=lambda m: print(m, flush=True))
+        svc.liverelay.start()
     STATE.pop("dashboard_api", None)
     return svc
 
