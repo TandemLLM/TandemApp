@@ -1287,6 +1287,14 @@ def build(args, env=None) -> Service:
     # the sampler: it sleeps while nothing is in flight (the live stream and the parallel view's
     # once-a-second sample; before 0.3.32 the standalone proxy never started it)
     live.start()
+    # the engines a paired node reports, discovered as backends (proxy/autodetect.py): an
+    # engine on a custom port joins without an env pin, since its node's agent already knows
+    # its real port; TANDEM_ENGINE_AUTODETECT=off leaves the backend table exactly as it was
+    if env.get("TANDEM_ENGINE_AUTODETECT", "on") != "off":
+        from proxy import autodetect
+        STATE["autodetect"] = svc.autodetect = autodetect.EngineAutoDetect(
+            svc, STATE["fleet"], log=lambda m: print(m, flush=True))
+        svc.autodetect.start()
     STATE.pop("dashboard_api", None)
     return svc
 

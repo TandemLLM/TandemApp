@@ -51,6 +51,10 @@ class Proxy:
         # no agent unless the test gives its own: the default is this machine's real one, which a
         # test controller claimed for itself (SRV-745)
         self.env.setdefault("TANDEM_NODE_AGENT", "off")
+        # no engine autodiscovery either (proxy/autodetect.py): a test that pairs a fake node
+        # with a `tandemllm` engine would otherwise find its backend appear under its feet;
+        # tests/test_proxy_autodetect.py drives the module by hand and turns it on
+        self.env.setdefault("TANDEM_ENGINE_AUTODETECT", "off")
         self.login = login
         self.ledger = ledger
         self.health_kw = health_kw

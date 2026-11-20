@@ -182,6 +182,9 @@ class Service:
         self.metrics = Metrics(registry, self) if registry is not None else None
         self.started = time.time()
         self.harness = None
+        # the engines a paired node reports, discovered as backends (proxy/autodetect.py);
+        # app.build starts it when TANDEM_ENGINE_AUTODETECT is not off
+        self.autodetect = None
         # the backend's drained node, or None (TandemApp's fleet sets it, proxy/fleetops.py)
         self.drain_of = lambda bid: None
         # the backend's engine host while a settings change restarts it (SRV-845,
@@ -239,6 +242,9 @@ class Service:
             self.hooks.stop()
         if getattr(self, "providers", None) is not None:
             self.providers.stop()
+        det = getattr(self, "autodetect", None)
+        if det is not None:
+            det.stop()
         self.health.stop()
         self.engines.stop()
         self.collect.stop()

@@ -4,6 +4,10 @@ Releases of TandemApp: the dashboard, the controller (`tandem-app`), Chat (chatd
 
 ## Unreleased
 
+### Engines found on paired nodes
+
+- A TandemEngine on a custom port is now a backend on its own (proxy/autodetect.py): every 15 s the controller asks each paired node's agent its engine list — the answer the Fleet row already reads — and registers each `tandemllm` engine whose `/health` answers as a backend `node-<node>-<engine>` at `http://<the node's address>:<its port>/v1`, marked as discovered. No port sweep: nothing is asked of a machine that pairing has not already brought in. A backend a person made or the env declares is never touched, an env pin wins over everything, a discovered backend never duplicates a url, and one whose engine stays silent for three cycles is dropped while a manual one at the same dead url stands. When no manual engine answers and exactly one discovered engine is up, the default backend (`TANDEM_DEFAULT_BACKEND`) is filled with it — the installer's `local` at :8000 is down and the engine on its real port serves — and it goes back to what `app.env` says the moment a manual engine answers again. `TANDEM_ENGINE_AUTODETECT=off` leaves the backend table exactly as it was.
+
 ### Pages per role
 
 - An admin picks which pages each role sees, under Users & access, Views (SRV-890): a TandemApp that many people use, such as one in the cloud, can show a new user Chat and API alone. Owners see every page; Account and Users & access follow the permissions. A hidden page leaves the menu, its link opens the first page shown, and its own routes answer 403 `view_hidden` to a session and to the role's API tokens. Overview, Performance, Health, Sparks, Playground and Get started read only what the top bar reads on every page, so the menu alone hides them, and that fleet data (nodes, deployments, metrics, alerts) stays readable to every role with `read`. The settings are `auth.views.<role>` and `auth.default_role`; `GET /v1/auth/session` names the pages in `views`.

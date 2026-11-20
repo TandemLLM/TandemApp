@@ -285,7 +285,10 @@ ADDED = (("models", "price_offpeak", "TEXT"),
          # the Backends page's providers (proxy/presets.py): a stored cloud flag (NULL: the
          # kind's) and the preset a backend was made from (NULL: none)
          ("backends", "cloud", "INTEGER"),
-         ("backends", "preset", "TEXT"))
+         ("backends", "preset", "TEXT"),
+         # what found this backend: {"node": ..., "engine": ...} as JSON when the engine
+         # autodiscovery made it (proxy/autodetect.py), NULL when a person or the env did
+         ("backends", "discovered", "TEXT"))
 
 
 def _inflight_col(v) -> int:
@@ -774,8 +777,8 @@ class ConfigDB:
         self._conn.execute(
             "INSERT INTO backends(id, kind, label, url, enabled, models_mode, models, fallback, "
             "max_inflight, timeouts, inject_usage, harness, created_at, updated_at, updated_by, "
-            "host, anthropic, cloud, preset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?)",
+            "host, anthropic, cloud, preset, discovered) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (doc["id"], kind, doc.get("label"), norm_url(doc["url"]),
              int(doc.get("enabled", True)), doc.get("models_mode", "discover"),
              json.dumps(doc.get("models", [])), json.dumps(doc.get("fallback", [])),
@@ -784,7 +787,8 @@ class ConfigDB:
              None if doc.get("inject_usage") is None else int(doc["inject_usage"]),
              json.dumps(doc.get("harness", {})), now, now, who, json.dumps(doc.get("host", {})),
              json.dumps(doc.get("anthropic", {})),
-             None if doc.get("cloud") is None else int(doc["cloud"]), doc.get("preset")))
+             None if doc.get("cloud") is None else int(doc["cloud"]), doc.get("preset"),
+             None if doc.get("discovered") is None else json.dumps(doc["discovered"])))
         self._audit(who, "create", "backend", doc["id"], [k for k in doc if k != "key"])
 
     def _update_backend_fields(self, bid: str, fields: dict, who: str) -> None:
@@ -816,7 +820,7 @@ class ConfigDB:
 
     def _row_backend(self, r) -> dict:
         (bid, kind, label, url, enabled, mmode, models, fallback, maxin, timeouts, inject,
-         harness, created, updated, by, host, anth, cloud_col, preset) = r
+         harness, created, updated, by, host, anth, cloud_col, preset, discovered) = r
         cloud = KINDS.get(kind, KINDS["generic"])["cloud"] if cloud_col is None else bool(cloud_col)
         to = dict(TIMEOUTS[cloud])
         to.update(json.loads(timeouts or "{}"))
@@ -832,12 +836,14 @@ class ConfigDB:
                 "host": dict({"mode": "auto", "url": None, "dcgm_url": None},
                              **json.loads(host or "{}")),
                 "created_at": created, "updated_at": updated, "updated_by": by,
+                # what found this backend (proxy/autodetect.py): None when a person or the env did
+                "discovered": json.loads(discovered) if discovered else None,
                 # SRV-877: the settings stored; proxy/translate/anthropic.py fills the defaults
                 **({"anthropic": json.loads(anth or "{}")} if kind == "anthropic" else {})}
 
     _BCOLS = ("id, kind, label, url, enabled, models_mode, models, fallback, max_inflight, "
               "timeouts, inject_usage, harness, created_at, updated_at, updated_by, host, "
-              "anthropic, cloud, preset")
+              "anthropic, cloud, preset, discovered")
 
     def backends(self) -> list[dict]:
         with self._lock:
@@ -854,11 +860,16 @@ class ConfigDB:
     def create_backend(self, doc: dict, who: str = "gui") -> dict:
         doc = dict(doc)
         kind = doc.get("kind")
+        # the engine autodiscovery's mark (proxy/autodetect.py): not the GUI's schema's, and the
+        # GUI can never set it — only this call, only from that module
+        discovered = doc.pop("discovered", None)
         if not doc.get("url") and kind in KINDS and KINDS[kind]["url"]:
             doc["url"] = KINDS[kind]["url"]
         errs = schema.validate(doc, "backend")
         if errs:
             raise ConfigError(f"{errs[0][0]} {errs[0][1]}", field=errs[0][0])
+        if discovered is not None:
+            doc["discovered"] = discovered
         if doc.get("preset") is not None and doc["preset"] not in presets_mod.IDS:
             raise ConfigError(f"no preset '{doc['preset']}'", field="preset")
         bad = harness_refusal(doc)
