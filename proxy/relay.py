@@ -517,6 +517,15 @@ class Relay:
     def _stream(self, handler, path, conn, pool, uh, adapter, injected, backend, rec, poll,
                 headers=None):
         st = Stamps()
+        # SRV-733 (additive): a new engine names its live request id in the response header
+        # at stream open (`X-Tandem-Request-Id`, the sibling TandemEngine PR), so the row
+        # joins to the engine's live row through the whole prefill — before the first frame
+        # (proxy/liverelay.py). The first-frame stamp in `_pump` stays the fallback for an
+        # engine that sends no header; `_finish` still writes the answer's own id at the end.
+        hdr_id = next((v for k, v in uh
+                       if k.lower() == "x-tandem-request-id" and v), None)
+        if hdr_id and rec.upstream_request is None:
+            rec.upstream_request = hdr_id
         to = backend["timeouts"]
         hx = getattr(rec, "hx", None)
         self._start(handler, 200, uh, backend, adapter, True, rec=rec)
@@ -605,6 +614,11 @@ class Relay:
                 event = bytes(buf[:end + sep])
                 del buf[:end + sep]
                 token, drop = adapter.read_frame(path, event[:end], st, injected)
+                if st.response_id is not None and rec.upstream_request is None:
+                    # liverelay: the engine's answer id is its live request id (SRV-733);
+                    # stamped while the stream runs so the live view can join this row to
+                    # the engine's (proxy/liverelay.py). `_finish` still writes the final.
+                    rec.upstream_request = st.response_id
                 if token:
                     rec.stamp_token(t_arr, st.kind, st.tool_name, st.tool_chars)
                 if hk is not None and not drop:
@@ -852,7 +866,10 @@ class Relay:
         rec.cost_micros = adapter.price(u, self.svc.price_of(backend["id"], rec.backend_model
                                                               or rec.public_model), rec.ts)
         rec.system_fingerprint = st.fingerprint
-        rec.upstream_request = st.response_id
+        if st.response_id is not None:
+            # an id the header or the first frame stamped stays when the answer never
+            # carried one (a stream that died before its first frame)
+            rec.upstream_request = st.response_id
 
     def _cost_line(self, st: Stamps, adapter, path, backend, rec) -> bytes:
         """The cost comment: the usage so far (the harness's requests summed, else the stream's

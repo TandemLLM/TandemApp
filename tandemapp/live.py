@@ -219,17 +219,26 @@ class LiveRegistry:
     `STATE["last_prefill"]`; `engine` returns the engine block's plain facts (model, version,
     draining, kv, memory, store). `clock` is wall time for the payload, `perf` the counter the
     records are stamped with; tests inject both.
+
+    `enrich` (additive) is called with each in-flight record once a tick; a dict it returns is
+    merged into that request's row. `live_rates` (additive) is called with nothing; a dict of
+    `decode_tps` / `prefill_tps` / `decode_live_tps` / `prefill_live_tps` fills the nulls of
+    the history sample and of `now`. The controller has no decode loop to sample: it uses both
+    to carry its TandemLLM backends' own live figures (proxy/liverelay.py). Both default None:
+    the payload is exactly what this registry measured.
     """
 
     def __init__(self, *, blocks=None, last_prefill=None, engine=None, clock=time.time,
                  perf=time.perf_counter, keep_s: float = KEEP_S, history: int = HISTORY,
                  interval: float = INTERVAL_S, hz: int = DEFAULT_HZ, activity: bool = True,
                  queue_timeout=None, sock_closed=None, windows: dict | None = None,
-                 slot_blocks=None):
+                 slot_blocks=None, enrich=None, live_rates=None):
         self.blocks_fn = blocks or (lambda: None)
         self.slot_blocks_fn = slot_blocks or (lambda i: None)
         self.last_prefill_fn = last_prefill or (lambda: None)
         self.engine_fn = engine or (lambda: {})
+        self.enrich_fn = enrich
+        self.live_rates_fn = live_rates
         self.queue_timeout_fn = queue_timeout or (lambda: None)
         self.sock_closed = sock_closed or act.socket_closed
         self.clock, self.perf = clock, perf
@@ -601,12 +610,14 @@ class LiveRegistry:
                 if tps is not None and not self._mostly_cached(r):
                     prefill_live += tps
                     pl_n += 1
-        self._samples.append({"t": _r(now_c, 3), "decode_tps": decode_tps,
-                              "prefill_tps": prefill_tps,
-                              "running": sum(1 for r in live if r.t_first is not None),
-                              "waiting": sum(1 for r in live if r.t_lock is None),
-                              "tokens": total, "decode_live_tps": _r(decode_live) if dl_n else None,
-                              "prefill_live_tps": _r(prefill_live) if pl_n else None})
+        sample = {"t": _r(now_c, 3), "decode_tps": decode_tps,
+                  "prefill_tps": prefill_tps,
+                  "running": sum(1 for r in live if r.t_first is not None),
+                  "waiting": sum(1 for r in live if r.t_lock is None),
+                  "tokens": total, "decode_live_tps": _r(decode_live) if dl_n else None,
+                  "prefill_live_tps": _r(prefill_live) if pl_n else None}
+        self._fill_rates(sample)
+        self._samples.append(sample)
         self._prev = (now_p, total, decoding)
         self._last_sample_p = now_p
         self.samples_taken += 1
@@ -632,7 +643,7 @@ class LiveRegistry:
         live = list(self._live.values())
         bs = self.blocks_fn()
         lp = self.last_prefill_fn()
-        rows = [self._row(r, now_p, None, bs) for r in live]
+        rows = [self._row_enriched(r, now_p, bs) for r in live]
         rows.sort(key=lambda x: {"decode": 0, "prefill": 1, "queued": 2}[x["phase"]])
         in_flight = list(rows)
         acts: dict[str, dict] = {}
@@ -708,6 +719,7 @@ class LiveRegistry:
                            "tick_cpu_us_mean": _r(self.tick_us["cpu_sum"] / self.tick_us["n"], 1)
                            if self.tick_us["n"] else None,
                            "tick_cpu_us_max": _r(self.tick_us["cpu_max"], 1)}}
+        self._fill_rates(out["now"])
         if history:
             out["history"] = samples
         return (out, raw_parts) if raw else out
@@ -982,6 +994,35 @@ class LiveRegistry:
         ms = rec.prompt_ms
         fwd = int(lp.get("forwarded") or 0)
         return fwd / (ms / 1e3) if fwd and ms else None
+
+    def _row_enriched(self, rec, now_p: float, bs) -> dict:
+        """The in-flight row, plus whatever `enrich` carries for the record (additive;
+        `enrich=None`: exactly `_row`). A hook that raises never costs the tick its row."""
+        row = self._row(rec, now_p, None, bs)
+        if self.enrich_fn is not None:
+            try:
+                extra = self.enrich_fn(rec)
+            except Exception:                                    # noqa: BLE001 (never the tick)
+                extra = None
+            if extra:
+                row.update(extra)
+        return row
+
+    def _fill_rates(self, into: dict) -> None:
+        """The nulls of a history sample or of `now` from `live_rates` (additive; None: no-op).
+        The controller has no decode loop: its engine's figures stand in for the rates it
+        cannot measure itself, and only where its own answer is null."""
+        if self.live_rates_fn is None:
+            return
+        try:
+            rates = self.live_rates_fn()
+        except Exception:                                        # noqa: BLE001 (never the tick)
+            return
+        if not rates:
+            return
+        for k in ("decode_tps", "prefill_tps", "decode_live_tps", "prefill_live_tps"):
+            if into.get(k) is None and rates.get(k) is not None:
+                into[k] = rates[k]
 
     def _row(self, rec, now_p: float, ended: float | None, bs) -> dict:
         bs = _own_blocks(rec, bs, self.slot_blocks_fn if ended is None else None)

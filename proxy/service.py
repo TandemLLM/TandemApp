@@ -203,6 +203,8 @@ class Service:
         self.notifier = None                   # notify.send; a test puts its own here
         # SRV-873: an API token's limits (proxy/tokenlimits.py)
         self.limits = None
+        # the engines' live figures for the live view (proxy/liverelay.py); app.build starts it
+        self.liverelay = None
         # SRV-849: the remote hooks around the relay (proxy/hooks.py); idle while none is enabled
         self.hooks = hooks_mod.Runner(cfg, log=lambda m: self.log(m))
         if registry is not None:
@@ -239,6 +241,9 @@ class Service:
             self.hooks.stop()
         if getattr(self, "providers", None) is not None:
             self.providers.stop()
+        relay = getattr(self, "liverelay", None)
+        if relay is not None:
+            relay.stop()
         self.health.stop()
         self.engines.stop()
         self.collect.stop()
