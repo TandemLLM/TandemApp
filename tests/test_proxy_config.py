@@ -90,9 +90,10 @@ def test_inflight_no_limit_by_default_and_the_old_default_64_migrates_to_none():
     db = C.ConfigDB(path, env={V.ENV: MASTER}, use_keychain=False).open()
     assert db.schema_was == 1
     assert db.backend("old")["max_inflight"] is None and db.backend("mine")["max_inflight"] == 7
-    # a new backend, from the GUI without the field, from the environment without the variable
+    # a new backend, from the GUI without the field, from the environment without the
+    # variable: the default cap, 64 (none is a thing you say, not the silence)
     db.create_backend({"id": "oa", "kind": "openai", "url": "https://api.openai.com/v1"})
-    assert db.backend("oa")["max_inflight"] is None
+    assert db.backend("oa")["max_inflight"] == 64
     db.update_backend("oa", {"max_inflight": 3})
     assert db.backend("oa")["max_inflight"] == 3
     db.update_backend("oa", {"max_inflight": None})

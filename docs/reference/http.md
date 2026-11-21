@@ -271,7 +271,7 @@ Every route but `/health`, the page and the sign-in needs an account's session o
 | `409` | `closed`, `stale` | a package proposal already closed, or whose base text changed since |
 | `409` | `conflict` | an Add Spark session in another state, a device picked twice, more devices than one add takes |
 | `409` | `not_a_member` | X-Tandem-Pin names a node that is not a member of the deployment |
-| `413` | `too_large` | a request body over the limit (a fleet request's body over 4 MiB) |
+| `413` | `too_large` | a request body over the limit (a fleet request's body over 4 MiB; a chunked body is measured against its route's cap as it arrives, not only by its Content-Length) |
 | `422` | `invalid_request_error`, `invalid_report` | a value the schema refuses: a config field (error.field), a field an environment variable locks (error.variable), a Laya, library or memory call's fields, an eval report |
 | `422` | `schema`, `secret`, `cap`, `user`, `unknown_id`, `unknown_package`, `rule_from_tool`, `no_session`, `no_user`, `refused_root`, `no_proposals`, `propose` | a memory note or a package proposal refused, with the reason as the type: a field (schema), a secret, a cap, an unknown note or package |
 | `429` with `Retry-After` | `too_many` | a fifth log or live stream at once; a sixth failed sign-in in a minute; too many wrong passwords or pairing attempts |
@@ -281,6 +281,7 @@ Every route but `/health`, the page and the sign-in needs an account's session o
 | `502` | `unreachable` | Add Spark: a paired device whose agent does not answer, or answers with an error |
 | `200` | `upstream_closed`, `upstream_error` | a stream that already began: the backend failed or closed early; the client gets an error event, then `[DONE]` |
 | `503` with `Retry-After` | `server_busy` | a backend or a deployment that cannot take the request now; error.code says why (the codes below) |
+| `503` | `server_busy` | the bodies being read at this moment are past the box's budget (2 GiB, `QSE_MAX_INFLIGHT_BODY_MB`): the request is refused unread |
 | `503` with `Retry-After` | `max_inflight` | every backend for the model is at the `max_inflight` you set (Retry-After: 1) |
 | `503` with `Retry-After` | `deployment_stopped` | a request for a deployment that is stopped, or a Split without a plan |
 | `503` with `Retry-After` | `no_member`, `member_not_serving` | a deployment with no member that takes requests now, or the pinned member does not |

@@ -219,22 +219,29 @@ def test_max_inflight_answers_503():
     srv.shutdown()
 
 
-def test_no_limit_from_us_by_default_for_vllm_and_cloud_kinds():
-    """PL1 (2026-10-06): the parallel setting is our engine's; a relayed backend (vLLM, SGLang, a
-    cloud API) with no explicit max_inflight takes as many requests at once as it accepts. 80 at
-    once (past the old default of 64) all reach it, and none is refused by the proxy."""
+def test_the_default_cap_is_64_and_none_says_no_limit():
+    """PL1 (2026-10-06) took the proxy's own cap off the table; the body-budget story
+    (tandemapp/http_body.py) brought a default back: a backend made without max_inflight
+    gets 64 -- the thread-count half of the fix -- and `none` says no limit out loud.
+    With it said, 80 at once (past the default) all reach a relayed backend (vLLM, a
+    cloud API) and none is refused by the proxy. The parallel setting of our own engine
+    stays the engine's."""
     srv, port = fake(models=["fake-a"])
-    env = {"TANDEM_BACKENDS": "v1,oa",
+    env = {"TANDEM_BACKENDS": "v1,oa,pl",
            "TANDEM_BACKEND_V1_KIND": "vllm", "TANDEM_BACKEND_V1_URL": f"http://127.0.0.1:{port}/v1",
            "TANDEM_BACKEND_V1_MODELS": "fake-a", "TANDEM_BACKEND_V1_MODELS_MODE": "list",
+           "TANDEM_BACKEND_V1_MAX_INFLIGHT": "none",
            "TANDEM_BACKEND_OA_KIND": "openai", "TANDEM_BACKEND_OA_URL": f"http://127.0.0.1:{port}/v1",
            "TANDEM_BACKEND_OA_KEY": FIXTURE_KEYS[2], "TANDEM_BACKEND_OA_MODELS": "fake-b",
-           "TANDEM_BACKEND_OA_MODELS_MODE": "list"}
+           "TANDEM_BACKEND_OA_MODELS_MODE": "list", "TANDEM_BACKEND_OA_MAX_INFLIGHT": "none",
+           "TANDEM_BACKEND_PL_KIND": "vllm", "TANDEM_BACKEND_PL_URL": f"http://127.0.0.1:{port}/v1",
+           "TANDEM_BACKEND_PL_MODELS": "fake-z", "TANDEM_BACKEND_PL_MODELS_MODE": "list"}
     with Proxy(env) as px:
         px.sync()
         svc = px.svc
         for bid in ("v1", "oa"):
             assert svc.cfg.backend(bid)["max_inflight"] is None
+        assert svc.cfg.backend("pl")["max_inflight"] == 64, "the default cap did not land"
         n, peak, out = 80, {"v1": 0}, []
         lock = threading.Lock()
 
@@ -261,11 +268,12 @@ def test_no_limit_from_us_by_default_for_vllm_and_cloud_kinds():
         w.join()
         assert out.count(200) == n, sorted(set(out))
         assert peak["v1"] > 64, peak
-        # an explicit cap still works, set from the GUI's store, and none takes it off again
-        svc.cfg.update_backend("v1", {"max_inflight": 2})
-        assert svc.cfg.backend("v1")["max_inflight"] == 2
-        svc.cfg.update_backend("v1", {"max_inflight": None})
-        assert svc.cfg.backend("v1")["max_inflight"] is None
+        # an explicit cap still works, set from the GUI's store, and none takes it off
+        # again (on `pl`: v1's and oa's are locked by their variables, as they are on the box)
+        svc.cfg.update_backend("pl", {"max_inflight": 2})
+        assert svc.cfg.backend("pl")["max_inflight"] == 2
+        svc.cfg.update_backend("pl", {"max_inflight": None})
+        assert svc.cfg.backend("pl")["max_inflight"] is None
     srv.shutdown()
 
 

@@ -62,7 +62,8 @@ same code path.
     TANDEM_BACKEND_<ID>_MODELS_MODE=discover        discover (GET /models, plus MODELS) | list
     TANDEM_BACKEND_<ID>_FALLBACK=openrouter         backends tried after this one, in order
     TANDEM_BACKEND_<ID>_MAX_INFLIGHT=none           requests at once, past it a fallback or a 503;
-                                                    none (the default): no limit from the
+                                                    a number is a cap you set, 64 when the
+                                                    variable is absent; none: no limit from the
                                                     proxy, the backend takes what it accepts
     TANDEM_BACKEND_<ID>_ENABLED=1
     TANDEM_BACKEND_<ID>_INJECT_USAGE=1              ask a stream for its usage frame
@@ -174,11 +175,15 @@ def harness_refusal(doc: dict) -> tuple[str, str] | None:
 JSON_GROUPS = ("timeouts", "harness", "host", "anthropic")
 TIMEOUTS = {False: {"connect": 5.0, "first_byte": 600.0, "idle": 120.0},
             True: {"connect": 10.0, "first_byte": 120.0, "idle": 60.0}}
-# A backend's requests at once: None, the default, is no limit from the proxy (a cloud API, vLLM or
-# SGLang takes as many as it accepts and answers its own 429/503); a number 1..4096 is a cap the
-# user set. Stored as 0 for none (the column predates the choice). Until schema 2 the default was
-# 64; a stored 64 becomes none in the migration (PL1, 2026-10-06).
-MAX_INFLIGHT = None
+# A backend's requests at once: 64, the default, is what a backend takes until the user
+# says otherwise (a number 1..4096 is a cap; none is no limit). The default is not a
+# judgement about a backend's appetite -- it is the thread-count half of the body-budget
+# story (tandemapp/http_body.py): unbounded handler threads each buffering a body is
+# how an authenticated flood out-buffers a box that co-hosts the engines. Stored as 0
+# for none (the column predates the choice). Until schema 2 the default was 64 and a
+# stored 64 became none in the migration (PL1, 2026-10-06); the default came back, the
+# migration stands -- a row that says none still means none.
+MAX_INFLIGHT = 64
 OLD_DEFAULT_INFLIGHT = 64
 FEATURE_GROUPS = ("mode", "class", "effort", "packages", "side", "loops", "e1", "tools",
                   "compaction", "states", "memory")

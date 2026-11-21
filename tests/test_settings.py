@@ -184,7 +184,8 @@ class Rig:
         self.cfg = config_mod.ConfigDB(os.path.join(self.dir, "config.sqlite3"), env={},
                                        use_keychain=False).open()
         self.cfg.create_backend({"id": "eng", "kind": "tandemllm",
-                                 "url": "http://198.51.100.7:8000/v1", "label": "Engine"},
+                                 "url": "http://198.51.100.7:8000/v1", "label": "Engine",
+                                 "max_inflight": None},   # said no limit: the field holds nothing
                                 who="t")
         self.cfg.create_backend({"id": "cloud", "kind": "openai", "key": OLD_KEY}, who="t")
         self.user, self.user_key = self.cfg.create_user({"label": "laptop"}, who="t")

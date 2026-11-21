@@ -51,8 +51,8 @@ THE CLIENT LEAVES: the upstream connection is closed within a quarter second (th
 generating), and the row says `abandoned`.
 
 CONCURRENCY: a thread per request (the server's), no lock held across a request, and per backend
-at most `max_inflight` requests at once when the user set one (none by default: the proxy adds no
-limit, a backend takes what it accepts): past it the request goes to a fallback when one has room,
+at most `max_inflight` requests at once (64 by default; `none` is no limit and the proxy adds
+none of its own beyond that): past the cap the request goes to a fallback when one has room,
 else a 503 with `Retry-After: 1`. The engine's queue, lock and `max_queue` are never
 touched.
 

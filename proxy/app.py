@@ -307,14 +307,16 @@ class Handler(BaseHTTPRequestHandler):
 
     _body_done = False               # the request in hand has had its body read to the end
 
-    def _read_raw(self) -> bytes:
+    def _read_raw(self, cap=None) -> bytes:
         """The request's body, consumed whole or not at all -- tandemapp/http_body.py owns
-        the framing, the same module the standalone server calls. An answer written with
-        the body still unread is a desync one request away: every path out of here has
-        read to the end of the framing, and BodyError (or handle_one_request) closes the
-        connection."""
+        the framing, the same module the standalone server calls. `cap` is the route's
+        own limit when it has one: a chunked body carries no Content-Length for
+        `_fleet_too_big` to weigh, so the cap travels into the read and stops it there.
+        An answer written with the body still unread is a desync one request away: every
+        path out of here has read to the end of the framing, and BodyError (or
+        handle_one_request) closes the connection."""
         try:
-            raw = http_body.read_body(self.rfile, self.headers)
+            raw = http_body.read_body(self.rfile, self.headers, cap=cap)
         except BodyError:
             self.close_connection = True     # the promised bytes, if they ever come,
             raise                            # would be read as the next request
@@ -326,18 +328,27 @@ class Handler(BaseHTTPRequestHandler):
         closes afterwards: the unread body would be the next request."""
         self._json(exc.code, {"error": {"type": exc.type, "message": exc.message}})
 
-    def _fleet_too_big(self, path: str) -> bool:
-        """A /v1/fleet/* body over FLEET_BODY_MAX: 413, unread, and the connection closed."""
+    def _fleet_cap(self, path: str):
+        """The body cap of a /v1/fleet/* route, or None for every other route: the
+        gateway's chat body is not a fleet body, a wheel's bytes have their own cap."""
         if not path.startswith("/v1/fleet/") or path == GATEWAY:
+            return None
+        if path == "/v1/fleet/plugins/upload":
+            from proxy import pluginapi          # SRV-857: a wheel's bytes, their own cap
+            return pluginapi.UPLOAD_MAX
+        return FLEET_BODY_MAX
+
+    def _fleet_too_big(self, path: str) -> bool:
+        """A /v1/fleet/* body over its cap, promised by Content-Length: 413, unread,
+        and the connection closed. A chunked body promises nothing and passes here --
+        the same cap travels into `_read_raw` and catches it chunk by chunk."""
+        cap = self._fleet_cap(path)
+        if cap is None:
             return False
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = -1
-        cap = FLEET_BODY_MAX
-        if path == "/v1/fleet/plugins/upload":
-            from proxy import pluginapi          # SRV-857: a wheel's bytes, their own cap
-            cap = pluginapi.UPLOAD_MAX
         if 0 <= n <= cap:
             return False
         self.close_connection = True
@@ -548,7 +559,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         from proxy import messages as messages_mod
         try:
-            raw = self._read_raw()
+            raw = self._read_raw(self._fleet_cap(path))
         except BodyError as exc:
             if messages_mod.is_messages(path):
                 return messages_mod.body_error(self, exc)
@@ -709,7 +720,7 @@ class Handler(BaseHTTPRequestHandler):
         if self._fleet_too_big(path):
             return
         try:
-            raw = self._read_raw()
+            raw = self._read_raw(self._fleet_cap(path))
         except BodyError as exc:
             return self._body_error(exc)
         if self._auth_api(method, path, raw):
